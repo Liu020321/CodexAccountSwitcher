@@ -2,6 +2,12 @@
 
 Windows 11 风格的 Codex 本地账户切换与 CLI 启动工具，绿色免安装。
 
+## 功能演示与图文介绍
+
+![软件账户切换首页](docs/images/overview.jpg)
+
+查看 [详细产品功能与亮点演示](docs/PRODUCT_GUIDE.md)：账户目录管理、CLI 启动、额度面板、托盘菜单、主题、切换过程及前台/收纳资源占用，共 11 张视频实录截图。截图使用示例账户。
+
 ## 使用
 
 在 Releases 下载便携版 ZIP，解压后运行 CodexSettings.exe。需要 Windows 11 x64 / .NET Framework 4.8。Codex CLI 请自行安装。
