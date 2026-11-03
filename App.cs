@@ -19,6 +19,10 @@ using System.Runtime.InteropServices;
 namespace CodexLocal {
 public class Program {
     [STAThread] public static int Main(string[] args) {
+        if(args.Length>0&&args[0]=="--end-process"){
+            int pid;long identity;if(args.Length!=3||!Int32.TryParse(args[1],out pid)||!Int64.TryParse(args[2],out identity))return 2;
+            try{ProcessControl.Stop(pid,identity);return 0;}catch(System.ComponentModel.Win32Exception){return 5;}catch{return 1;}
+        }
         try {
             if(args.Contains("--diagnostics")){var check=new Engine(Engine.DefaultRoot,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),".codex"));File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"occupancy-results.txt"),DateTime.Now.ToString("O")+Environment.NewLine+Occupancy.Report(check.LockRoots()));return 0;}
             if (args.Contains("--self-test")) { SelfTest.Run(); return 0; }
@@ -142,16 +146,24 @@ public partial class UI {
             Button("ResumeSwitch").IsEnabled=!busy;
             Button("CancelSwitch").Visibility=(busy||File.Exists(engine.Journal))?Visibility.Visible:Visibility.Collapsed;
             Button("CancelSwitch").Content=busy?"停止本次切换":"撤销并恢复原账户";
-            if (File.Exists(engine.Journal)) Text("Status").Text = "切换已暂停：可以继续同一次操作，或撤销恢复原账户。";
+            if (File.Exists(engine.Journal)) {
+                Text("Status").Text = busy?"正在执行本次切换，可停止后继续或撤销。":"切换已暂停：可以继续同一次操作，或撤销恢复原账户。";
+                if(!busy){int saved=engine.PendingProgress;Find<ProgressBar>("CopyProgress").Value=saved;Text("ProgressText").Text=saved+"% · 已保存本次进度，继续时先校验已有副本。";}
+            }
         } finally { refreshing = false; }
     }
     async Task Switch(string key) {
-        if(busy)return;engine.CancelRequested=false;busy=true;Refresh();stageLines.Clear();Find<ProgressBar>("CopyProgress").Value=0;Text("ProgressText").Text="正在检查账户与占用…";bool retry=false;Exception failure=null;
+        if(busy)return;engine.CancelRequested=false;busy=true;Refresh();stageLines.Clear();int savedProgress=engine.PendingProgress;Find<ProgressBar>("CopyProgress").Value=savedProgress;Text("ProgressText").Text=savedProgress>0?savedProgress+"% · 继续本次切换，正在检查已复制文件…":"正在检查账户与占用…";bool retry=false;Exception failure=null;
         await operationGate.WaitAsync();
         try{await Task.Run(()=>engine.Switch(key));Text("Status").Text="切换完成，请重新打开 Codex 桌面版。";UpdateQuotaIcon();}
-        catch(Exception error){failure=error;Text("Status").Text="切换已暂停 · 可关闭占用后继续";Text("ProgressText").Text=error.Message;}
+        catch(Exception error){failure=error;Text("Status").Text="切换已暂停 · 请查看具体原因，可继续或撤销";Text("ProgressText").Text=error.Message;}
         finally{operationGate.Release();busy=false;Refresh();}
-        if(failure!=null&&!engine.CancelRequested){string report=await Task.Run(()=>{try{return Occupancy.Report(engine.LockRoots());}catch{return "未能查询到占用详情";}});retry=SwitchNotice(failure.Message,report);}
+        if(failure!=null&&!engine.CancelRequested){
+            string report="";
+            if(TransferFailure.IsLock(failure)||TransferFailure.IsPermission(failure))
+                report=await Task.Run(()=>{try{return FileLocksmith.FindUI()!=null?"":Occupancy.Report(engine.LockRoots());}catch{return "未能查询到占用详情；请以上方实际错误为准。";}});
+            retry=SwitchNotice(failure,report);
+        }
         if(retry)await Switch(File.Exists(engine.Journal)?null:key);
     }
     async Task UndoSwitch(){

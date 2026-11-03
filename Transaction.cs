@@ -6,8 +6,24 @@ using System.Security.Cryptography;
 using System.Web.Script.Serialization;
 
 namespace CodexLocal {
+public static class TransferFailure {
+    public static bool IsLock(Exception error){
+        for(var e=error;e!=null;e=e.InnerException){
+            int code=e.HResult&0xffff;
+            var native=e as System.ComponentModel.Win32Exception;
+            if(native!=null)code=native.NativeErrorCode;
+            if(code==32||code==33)return true;
+        }
+        return false;
+    }
+    public static bool IsPermission(Exception error){
+        for(var e=error;e!=null;e=e.InnerException)
+            if(e is UnauthorizedAccessException||(e.HResult&0xffff)==5)return true;
+        return false;
+    }
+}
 public class SwitchRecord {
-    public int Version=2,Phase;
+    public int Version=2,Phase,LastProgress;
     public bool SlotExisted;
     public string Id,Key,OldKey,Source,Slot;
 }
@@ -17,13 +33,53 @@ public partial class Engine {
     public Action<string> BeforeFileDelete=delegate{};
     public volatile bool CancelRequested;
     void CheckCancel(){if(CancelRequested)throw new OperationCanceledException("已停止，可继续或撤销本次切换");}
-    void Say(int percent,string name){CheckCancel();Audit(name);Stage(name);Progress(percent,name);}
+    SwitchRecord progressRecord;
+    public int PendingProgress {
+        get { try {
+            if(!File.Exists(Journal)||new FileInfo(Journal).Length>1048576)return 0;
+            var r=new JavaScriptSerializer().Deserialize<SwitchRecord>(File.ReadAllText(Journal));
+            if(r==null||r.Version!=2||r.Phase<0||r.Phase>7)return 0;
+            int[] floors={0,25,30,33,45,73,80,97};
+            return Math.Max(floors[r.Phase],Math.Max(0,Math.Min(99,r.LastProgress)));
+        }catch{return 0;} }
+    }
+    void ReportProgress(int percent,string message){
+        if(progressRecord!=null){
+            int previous=progressRecord.LastProgress;
+            percent=Math.Max(previous,Math.Min(99,percent));
+            if(percent>previous){progressRecord.LastProgress=percent;Save(progressRecord,progressRecord.Phase);}
+        }
+        Progress(percent,message);
+    }
+    void Say(int percent,string name){CheckCancel();Audit(name);Stage(name);ReportProgress(percent,name);}
     void Audit(string text){string dir=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"logs");Directory.CreateDirectory(dir);File.AppendAllText(Path.Combine(dir,"switch-"+DateTime.Today.ToString("yyyy-MM-dd")+".log"),DateTime.Now.ToString("O")+" "+text+Environment.NewLine);}
     static string Full(string p){return Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar);}
     bool Same(string a,string b){return Full(a).Equals(Full(b),StringComparison.OrdinalIgnoreCase);}
     Dictionary<string,string> Inventory(string root){
         var result=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);if(!Directory.Exists(root))return result;
         Action<string> walk=null;walk=dir=>{NoLink(dir);foreach(string f in Directory.GetFiles(dir)){NoLink(f);result.Add(f.Substring(root.TrimEnd('\\').Length+1),f);}foreach(string child in Directory.GetDirectories(dir).Where(d=>!RuntimeEntry(d)))walk(child);};walk(root);return result;
+    }
+    // Only call for transaction-owned checkpoints while the complete source still exists.
+    // Never use this after source cleanup has started: partial sources cannot repair a backup.
+    void RefreshCheckpoint(string source,string destination,string key,int start,int end){
+        if(!Read(source).Email.Equals(AccountEmails[Array.IndexOf(Keys,key)],StringComparison.OrdinalIgnoreCase))
+            throw new IOException("源账户身份已变化，保留所有副本并停止迁移："+source);
+        var expected=Inventory(source);
+        Copy(source,destination,start,end,true);
+        var current=Inventory(source);
+        if(expected.Count!=current.Count||expected.Keys.Any(k=>!current.ContainsKey(k)))
+            throw new IOException("复制过程中源目录发生变化，请退出使用配置的程序后重试。");
+        // Prune only obsolete checkpoint files, never files in the authoritative source.
+        foreach(var item in Inventory(destination)){
+            CheckCancel();
+            if(!current.ContainsKey(item.Key)){
+                var attrs=File.GetAttributes(item.Value);
+                if((attrs&FileAttributes.ReadOnly)!=0)File.SetAttributes(item.Value,attrs&~FileAttributes.ReadOnly);
+                File.Delete(item.Value);
+            }
+        }
+        Verify(source,destination,false);
+        Audit("中转副本已按当前源文件重新校验");
     }
     void CompareFiles(string a,string b){using(var sha=SHA256.Create())using(var x=File.OpenRead(a))using(var y=File.OpenRead(b))if(!sha.ComputeHash(x).SequenceEqual(sha.ComputeHash(y)))throw new IOException("内容校验失败，未清理源文件："+a);}
     void Verify(string source,string destination,bool subset){
@@ -44,12 +100,16 @@ public partial class Engine {
         Directory.Delete(path,false);
     }
     void DeleteVerified(string source,string reference,int start,int end){
-        if(!Directory.Exists(source)){Progress(end,"源目录已清理");return;}
+        if(!Directory.Exists(source)){ReportProgress(end,"源目录已清理");return;}
         Verify(source,reference,true);BeforeDelete(source);
         var files=Inventory(source);int count=0;
-        foreach(var f in files){CheckCancel();NoLink(f.Value);CompareFiles(f.Value,Path.Combine(reference,f.Key));BeforeFileDelete(f.Value);File.Delete(f.Value);count++;Progress(start+(end-start)*count/Math.Max(1,files.Count),"清理源文件 · "+f.Key);}
+        foreach(var f in files){CheckCancel();NoLink(f.Value);CompareFiles(f.Value,Path.Combine(reference,f.Key));BeforeFileDelete(f.Value);
+            // Only after content verification, remove the Windows read-only flag; never change ACLs or bypass locks.
+            var attributes=File.GetAttributes(f.Value);bool readOnly=(attributes&FileAttributes.ReadOnly)!=0;
+            try{if(readOnly)File.SetAttributes(f.Value,attributes&~FileAttributes.ReadOnly);File.Delete(f.Value);}
+            catch{if(readOnly&&File.Exists(f.Value))try{File.SetAttributes(f.Value,attributes);}catch{}throw;}count++;ReportProgress(start+(end-start)*count/Math.Max(1,files.Count),"清理源文件 · "+f.Key);}
         // Enumerate without following links, then remove only empty directories.
-        Action<string> remove=null;remove=dir=>{NoLink(dir);foreach(var child in Directory.GetDirectories(dir)){if(RuntimeEntry(child))RemoveRuntime(child);else remove(child);}Directory.Delete(dir,false);};remove(source);Progress(end,"源目录清理完成");
+        Action<string> remove=null;remove=dir=>{NoLink(dir);foreach(var child in Directory.GetDirectories(dir)){if(RuntimeEntry(child))RemoveRuntime(child);else remove(child);}Directory.Delete(dir,false);};remove(source);ReportProgress(end,"源目录清理完成");
     }
     void Save(SwitchRecord record,int phase){
         record.Phase=phase;var bytes=System.Text.Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(record));string temp=Journal+".new";
@@ -91,7 +151,7 @@ public partial class Engine {
             try{r=new JavaScriptSerializer().Deserialize<SwitchRecord>(File.ReadAllText(Journal));}catch(Exception){throw new IOException("发现旧版或无法识别的恢复记录。请保留配置并按说明手动恢复。");}
             if(r==null||r.Version!=2||!Keys.Contains(r.Key)||!Keys.Contains(r.OldKey)||r.Key==r.OldKey||r.Id==null||!System.Text.RegularExpressions.Regex.IsMatch(r.Id,"^[a-f0-9]{32}$")||!IsHome(r.Source,r.Key)||!IsHome(r.Slot,r.OldKey)||r.Phase<0||r.Phase>7)throw new IOException("恢复记录校验失败，已停止文件操作");
             // Always resume the single durable transaction.
-            Say(1,"恢复上次未完成的迁移");
+            r.LastProgress=PendingProgress;
         }else{
             if(AccountEmails.Any(e=>e=="")||AccountEmails[0].Equals(AccountEmails[1],StringComparison.OrdinalIgnoreCase))throw new IOException("需要两个不同的账户，请先选择并检查账户文件夹");
             if(!Keys.Contains(key)||!Matches(key))throw new IOException("目标认证文件与账户不匹配");
@@ -104,19 +164,24 @@ public partial class Engine {
             }
             Directory.CreateDirectory(Profiles);Save(r,r.Phase);
         }
+        progressRecord=r;
         // Temporary paths are derived from validated fields, never accepted from the journal.
         string outgoing=Path.Combine(Profiles,".outgoing-"+r.Id),retired=Active+"-retired-"+r.Id,incoming=Active+"-incoming-"+r.Id;
         try{
-            if(r.Phase==0){string staging=Path.Combine(Profiles,".transfer-"+r.Id);Say(1,"准备独立中转副本");Copy(r.Source,staging,1,3);Verify(r.Source,staging,false);Say(3,"1 / 6 · 复制当前桌面账户到 D 盘");Copy(Active,outgoing,3,25);Verify(Active,outgoing,false);Save(r,1);}
+            if(r.Phase==2&&r.LastProgress==0)r.LastProgress=30;
+            ReportProgress(r.LastProgress,r.LastProgress>0?"继续本次切换 · 正在校验已复制文件":"正在准备本次切换");
+            if(r.Phase==0){string staging=Path.Combine(Profiles,".transfer-"+r.Id);Say(1,"准备独立中转副本");RefreshCheckpoint(r.Source,staging,r.Key,1,3);Say(3,"1 / 6 · 复制当前桌面账户到 D 盘");RefreshCheckpoint(Active,outgoing,r.OldKey,3,25);Save(r,1);}
             if(r.Phase==1){Say(26,"2 / 6 · 校验并提交原账户存储");
                 if(Directory.Exists(outgoing)){
+                    RefreshCheckpoint(Active,outgoing,r.OldKey,26,28);
                     if(Directory.Exists(r.Slot)){if(Directory.EnumerateFileSystemEntries(r.Slot).Any())throw new IOException("原账户目标目录出现新内容，已暂停");Directory.Delete(r.Slot,false);}
                     Directory.CreateDirectory(Path.GetDirectoryName(r.Slot));Rename(outgoing,r.Slot);
                 }
+                if(!r.SlotExisted)RefreshCheckpoint(Active,r.Slot,r.OldKey,28,30);
                 Verify(Active,r.Slot,false);Save(r,2);
             }
             if(r.Phase==2){Say(30,"3 / 6 · 核验归档，准备清理 C 盘原配置");CheckClear();
-                if(Directory.Exists(Active)){Verify(Active,r.Slot,false);Rename(Active,retired);}
+                if(Directory.Exists(Active)){if(!r.SlotExisted)RefreshCheckpoint(Active,r.Slot,r.OldKey,28,30);Verify(Active,r.Slot,false);Rename(Active,retired);}
                 else if(!Directory.Exists(retired))throw new IOException("找不到 C 盘原始配置，已暂停恢复");
                 Save(r,3);
             }
@@ -125,10 +190,16 @@ public partial class Engine {
             if(r.Phase==4){CheckClear();Say(46,"4 / 6 · 复制另一账户到 C 盘暂存");
                 if(Directory.Exists(Active)&&Read(Active).Email==AccountEmails[Array.IndexOf(Keys,r.OldKey)]){Verify(Active,r.Slot,false);Rename(Active,retired);DeleteVerified(retired,r.Slot,33,45);}
                 if(Directory.Exists(Active))ClearRuntimeOnly(Active);
-                string staged=Path.Combine(Profiles,".transfer-"+r.Id);Copy(Directory.Exists(staged)?staged:r.Source,incoming,46,73);Verify(r.Source,incoming,false);Save(r,5);
+                string staged=Path.Combine(Profiles,".transfer-"+r.Id);
+                RefreshCheckpoint(r.Source,staged,r.Key,46,50);
+                RefreshCheckpoint(staged,incoming,r.Key,50,73);Verify(r.Source,incoming,false);Save(r,5);
             }
             if(r.Phase==5){CheckClear();Say(74,"5 / 6 · 安装并校验新桌面账户");
-                if(Directory.Exists(incoming)){if(Directory.Exists(Active))throw new IOException("C 盘配置位置被占用");Rename(incoming,Active);}
+                if(Directory.Exists(incoming)){
+                    if(Directory.Exists(Active))throw new IOException("C 盘配置位置出现新目录，已保留，请检查后继续。");
+                    RefreshCheckpoint(r.Source,Path.Combine(Profiles,".transfer-"+r.Id),r.Key,74,76);
+                    RefreshCheckpoint(r.Source,incoming,r.Key,76,80);Rename(incoming,Active);
+                }
                 if(!Read(Active).Email.Equals(AccountEmails[Array.IndexOf(Keys,r.Key)],StringComparison.OrdinalIgnoreCase))throw new IOException("新桌面账户校验失败");
                 Verify(r.Source,Active,false);Save(r,6);
             }
@@ -138,8 +209,8 @@ public partial class Engine {
             }
             if(Read(Active).Email.Equals(Read(r.Slot).Email,StringComparison.OrdinalIgnoreCase)||Directory.Exists(r.Source))throw new IOException("迁移后账户分离检查未通过，请恢复本次操作");
             string stagingDone=Path.Combine(Profiles,".transfer-"+r.Id);if(Directory.Exists(stagingDone))DeleteVerified(stagingDone,Active,97,99);
-            File.Delete(Journal);Say(100,"切换完成 · C / D 盘分别保留两个不同账户");
-        }catch(Exception e){Audit("暂停 "+e.ToString());Stage("操作暂停 · "+e.Message);throw new IOException(e.Message+"\n已保存恢复记录。关闭占用后点击“继续未完成切换”，不会覆盖现有文件。",e);}
+            File.Delete(Journal);progressRecord=null;Say(100,"切换完成 · C / D 盘分别保留两个不同账户");
+        }catch(Exception e){Audit("暂停 "+e.ToString());Stage("操作暂停 · "+e.Message);throw new IOException(e.Message+"\n已保存恢复记录。请先处理上方具体错误，再点击“继续未完成切换”；已有副本会重新校验。",e);}finally{progressRecord=null;}
     }
 }
 }

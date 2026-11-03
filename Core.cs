@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -91,14 +91,37 @@ public partial class Engine {
         foreach (string f in Directory.GetFiles(source)) { NoLink(f); files.Add(Tuple.Create(f,System.IO.Path.Combine(target,System.IO.Path.GetFileName(f)))); }
         foreach (string d in Directory.GetDirectories(source).Where(d=>!RuntimeEntry(d))) Collect(d,System.IO.Path.Combine(target,System.IO.Path.GetFileName(d)),files);
     }
-    void Copy(string source, string target, int start, int end) {
+    void Copy(string source, string target, int start, int end, bool refresh=false) {
         var files = new List<Tuple<string,string>>(); Collect(source,target,files);
         for (int i=0;i<files.Count;i++) {
-            CheckCancel(); var item = files[i]; File.Copy(item.Item1,item.Item2,true);
+            CheckCancel(); var item = files[i]; bool reused=false;
+            // A verified identical checkpoint must not be overwritten on resume (it may be read-only).
+            if(File.Exists(item.Item2)){
+                bool identical;
+                using(var sha=SHA256.Create())using(var a=File.OpenRead(item.Item1))using(var b=File.OpenRead(item.Item2))
+                    identical=sha.ComputeHash(a).SequenceEqual(sha.ComputeHash(b));
+                reused=identical;
+                if(!identical){
+                    if(!refresh)CompareFiles(item.Item1,item.Item2);
+                    string fresh=item.Item2+".checkpoint-"+Guid.NewGuid().ToString("N");
+                    try{
+                        File.Copy(item.Item1,fresh,false);CompareFiles(item.Item1,fresh);CheckCancel();
+                        var attrs=File.GetAttributes(item.Item2);
+                        bool readOnly=(attrs&FileAttributes.ReadOnly)!=0;
+                        try{
+                            if(readOnly)File.SetAttributes(item.Item2,attrs&~FileAttributes.ReadOnly);
+                            File.Replace(fresh,item.Item2,null);
+                        }catch{
+                            if(readOnly&&File.Exists(item.Item2))File.SetAttributes(item.Item2,attrs);
+                            throw;
+                        }
+                    }finally{if(File.Exists(fresh)){File.SetAttributes(fresh,FileAttributes.Normal);File.Delete(fresh);}}
+                }
+            }else File.Copy(item.Item1,item.Item2,false);
             using (var hash = SHA256.Create()) using (var a = File.OpenRead(item.Item1)) using (var b = File.OpenRead(item.Item2)) {
                 if (!hash.ComputeHash(a).SequenceEqual(hash.ComputeHash(b))) throw new IOException("校验失败：" + item.Item1);
             }
-            Progress(start + (end-start)*(i+1)/Math.Max(1,files.Count),"复制并校验 · " + System.IO.Path.GetFileName(item.Item1));
+            ReportProgress(start + (end-start)*(i+1)/Math.Max(1,files.Count),(reused?"校验已复制文件 · ":"复制并校验 · ") + System.IO.Path.GetFileName(item.Item1));
         }
     }
 

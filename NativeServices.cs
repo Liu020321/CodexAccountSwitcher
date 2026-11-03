@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -43,6 +43,57 @@ public static class NativeFolderPicker {
             int result=dialog.Show(new WindowInteropHelper(owner).Handle);if(result==unchecked((int)0x800704C7))return null;if(result<0)Marshal.ThrowExceptionForHR(result);
             IShellItem item;dialog.GetResult(out item);try{IntPtr name;item.GetDisplayName(0x80058000,out name);try{return Marshal.PtrToStringUni(name);}finally{Marshal.FreeCoTaskMem(name);}}finally{Marshal.FinalReleaseComObject(item);}
         }finally{if(timer!=UIntPtr.Zero)KillTimer(IntPtr.Zero,timer);GC.KeepAlive(cancel);Marshal.FinalReleaseComObject(dialog);}
+    }
+}
+// Integration adapter: launches the separately installed Microsoft PowerToys UI.
+// Protocol reference: microsoft/PowerToys, FileLocksmithLib/IPC.cpp and Constants.h.
+public static class FileLocksmith {
+    public static string FindUI(){
+        var candidates=new List<string>();
+        foreach(string entry in (Environment.GetEnvironmentVariable("PATH")??"").Split(';')){
+            try{string folder=entry.Trim().Trim('"');if(folder.Length==0)continue;
+                if(File.Exists(Path.Combine(folder,"PowerToys.FileLocksmith.CLI.exe"))){var parent=Directory.GetParent(folder.TrimEnd(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar));if(parent!=null)candidates.Add(Path.Combine(parent.FullName,"WinUI3Apps","PowerToys.FileLocksmithUI.exe"));}
+            }catch{}
+        }
+        foreach(string root in new[]{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)})
+            candidates.Add(Path.Combine(root,"PowerToys","WinUI3Apps","PowerToys.FileLocksmithUI.exe"));
+        return candidates.FirstOrDefault(File.Exists);
+    }
+    public static string[] Targets(string message,string[] fallback){
+        var paths=new List<string>();
+        foreach(System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(message,"[“\"]([A-Za-z]:[^”\"\r\n]+)[”\"]")){
+            string path=match.Groups[1].Value;if(File.Exists(path)||Directory.Exists(path))paths.Add(Path.GetFullPath(path));
+        }
+        return (paths.Count>0?paths:fallback.Where(p=>File.Exists(p)||Directory.Exists(p))).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+    public static Process Open(string[] paths){
+        string executable=FindUI();if(executable==null)throw new IOException("未找到已安装的 PowerToys File Locksmith，请安装或启用此工具后重试。");
+        if(paths.Length==0)throw new IOException("待检查的文件路径已不存在，请重新检查本次切换。");
+        if(paths.Any(p=>p.IndexOfAny(new[]{'\r','\n'})>=0))throw new IOException("路径包含不支持的换行符。");
+        string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Microsoft","PowerToys","File Locksmith");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory,"last-run.log"),String.Join("\n",paths)+"\n\n",new UnicodeEncoding(false,false));
+        return Process.Start(new ProcessStartInfo(executable){UseShellExecute=true,WorkingDirectory=Path.GetDirectoryName(executable)});
+    }
+}
+public static class ProcessControl {
+    public static void Stop(int pid,long identity) {
+        if(pid<=0||pid==Process.GetCurrentProcess().Id||identity<=0)throw new IOException("无法确认进程身份，请重新检查进程列表。");
+        Process process;try{process=Process.GetProcessById(pid);}catch(ArgumentException){return;}
+        using(process){
+            if(process.HasExited)return;
+            if(process.StartTime.ToUniversalTime().Ticks!=identity)throw new IOException("该 PID 已被其他进程使用，已取消结束操作，请重新检查。");
+            process.Kill();
+            if(!process.WaitForExit(5000))throw new IOException("进程尚未退出，请重新检查；本次迁移仍保持暂停。");
+        }
+    }
+    public static void StopElevated(int pid,long identity) {
+        using(var helper=Process.Start(new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location,"--end-process "+pid+" "+identity){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden})){
+            if(helper==null)throw new IOException("未能启动管理员操作。");
+            helper.WaitForExit();
+            if(helper.ExitCode!=0)throw new IOException("管理员结束操作失败（代码 "+helper.ExitCode+"）。请重新检查权限及进程状态。");
+        }
+        try{using(var process=Process.GetProcessById(pid))if(!process.HasExited&&process.StartTime.ToUniversalTime().Ticks==identity)throw new IOException("进程仍在运行，未完成结束操作。");}catch(ArgumentException){}
     }
 }
 public static class Occupancy {

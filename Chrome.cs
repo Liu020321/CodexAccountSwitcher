@@ -114,6 +114,9 @@ public partial class UI {
             Page(true);await Task.Delay(200);CaptureVisual(Find<Grid>("RootGrid"),"cli-live.png");
             var shell=Find<ComboBox>("Shell");shell.IsDropDownOpen=true;await Task.Delay(100);Require(shell.Items.Count==2,"terminal popup has two options");shell.SelectedIndex=1;shell.IsDropDownOpen=false;
             combo.SelectedIndex=1;await Task.Delay(150);Page(false);await Task.Delay(200);CaptureVisual(Find<Grid>("RootGrid"),"light-live.png");
+            Find<ProgressBar>("CopyProgress").Value=4;Text("ProgressText").Text="4% · 继续本次切换，正在校验已复制文件";
+            Find<Expander>("CopyDetails").IsExpanded=true;Text("StageDetails").Text="已恢复上次保存的进度：4%\n内容一致的文件直接复用；变更文件重新复制并校验。\n校验完成后继续本次切换，不创建第二个任务。";
+            await Task.Delay(100);pageScroll.ScrollToEnd();await Task.Delay(100);CaptureVisual(Find<Grid>("RootGrid"),"resume-live.png");
             Button("CaptionClose").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));await Task.Delay(150);Require(!Window.IsVisible,"main close hides to tray");
             Window.Show();Window.Activate();await Task.Delay(100);Require(Window.IsVisible,"main can reopen after close");
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"ui-test-results.txt"),"PASS: integrated titlebar; 46px caption targets; all themes; three-item overlay menu; shared slim scrollbars; five panel open/dismiss/reopen cycles; outside activation dismiss; main close-to-tray/reopen; terminal selection; monitor work-area maximize and caption visibility; single/double tray gestures; native Windows folder picker; automatic distinct CLI account; default D project; collapsed migration stages; transparent multi-resolution ring icon and 4K source render; profile settings dialog; context menu automatic dismissal.\r\nNo account switched, no terminal launched, no network quota query.");

@@ -62,12 +62,63 @@ public static class SelfTest {
                 undo.Stage=message=>{};undo.CancelRequested=false;undo.Undo();
                 Check(Engine.Read(undo.Active).Email==Engine.Emails[0]&&undo.Matches("work")&&!File.Exists(undo.Journal),"undo phase "+phase);
             }
+            var readOnlyTest=new Engine(Path.Combine(temp,"readonly"),Path.Combine(temp,"readonly-user",".codex")){Occupied=()=>false};Auth(readOnlyTest.Active,Engine.Emails[0]);Auth(readOnlyTest.Profile("work"),Engine.Emails[1]);
+            string readOnlySource=Path.Combine(readOnlyTest.Profile("work"),"AGENTS.md");File.WriteAllText(readOnlySource,"test read-only configuration");File.SetAttributes(readOnlySource,FileAttributes.ReadOnly);
+            readOnlyTest.Stage=message=>{if(message.StartsWith("1 /"))readOnlyTest.CancelRequested=true;};try{readOnlyTest.Switch("work");}catch(IOException){}
+            Check(File.Exists(readOnlySource),"cancel preserves read-only source");readOnlyTest.Stage=delegate{};readOnlyTest.CancelRequested=false;readOnlyTest.Switch(null);
+            Check(Engine.Read(readOnlyTest.Active).Email==Engine.Emails[1]&&File.ReadAllText(Path.Combine(readOnlyTest.Active,"AGENTS.md"))=="test read-only configuration"&&!File.Exists(readOnlyTest.Journal),"read-only checkpoint resumes and verified cleanup completes");
+            File.SetAttributes(Path.Combine(readOnlyTest.Active,"AGENTS.md"),FileAttributes.Normal);
+            using(var child=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("powershell.exe","-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60"){UseShellExecute=false,CreateNoWindow=true})){
+                try{long identity=child.StartTime.ToUniversalTime().Ticks;bool rejected=false;try{ProcessControl.Stop(child.Id,identity+1);}catch(IOException){rejected=true;}Check(rejected&&!child.HasExited,"process identity mismatch cannot kill process");ProcessControl.Stop(child.Id,identity);Check(child.WaitForExit(1000),"end task verifies child process termination");ProcessControl.Stop(child.Id,identity);}
+                finally{if(!child.HasExited){child.Kill();child.WaitForExit();}}
+            }
             var runtime=new Engine(Path.Combine(temp,"runtime"),Path.Combine(temp,"runtime-user",".codex")){Occupied=()=>false};Auth(runtime.Active,Engine.Emails[0]);Auth(runtime.Profile("work"),Engine.Emails[1]);
             Directory.CreateDirectory(Path.Combine(runtime.Profile("work"),"app-server-control"));File.WriteAllText(Path.Combine(runtime.Profile("work"),"app-server-control","app-server-control.sock"),"runtime only");
             runtime.Stage=message=>{if(message.StartsWith("4 /"))Directory.CreateDirectory(Path.Combine(runtime.Active,"app-server-daemon"));};runtime.Switch("work");
             Check(!Directory.Exists(Path.Combine(runtime.Active,"app-server-control"))&&Engine.Read(runtime.Active).Email==Engine.Emails[1],"runtime endpoints excluded; recreated empty active runtime reconciled");
             var locked=new Engine(Path.Combine(temp,"locked"),Path.Combine(temp,"locked-user",".codex")){Occupied=()=>false};Auth(locked.Active,Engine.Emails[0]);Auth(locked.Profile("work"),Engine.Emails[1]);
             string lockedFile=Path.Combine(locked.Active,"example.txt");using(var handle=new FileStream(lockedFile,FileMode.Open,FileAccess.Read,FileShare.None)){bool blocked=false;try{locked.Switch("work");}catch(IOException){blocked=true;}Check(blocked&&File.Exists(lockedFile),"real exclusive file lock preserves original");}locked.Switch(null);Check(Engine.Read(locked.Active).Email==Engine.Emails[1],"release actual lock resumes same transaction");
+            Check(TransferFailure.IsLock(new IOException("wrapper",new IOException("locked",unchecked((int)0x80070020)))),"inner sharing violation classified as lock");
+            Check(!TransferFailure.IsLock(new IOException("内容校验失败")),"checksum error is not a process lock");
+            Check(TransferFailure.IsPermission(new IOException("wrapper",new UnauthorizedAccessException("denied"))),"permission classified independently");
+            foreach(int checkpoint in new[]{1,2,3,4,5}){
+                var changed=new Engine(Path.Combine(temp,"changed-"+checkpoint),Path.Combine(temp,"changed-user-"+checkpoint,".codex")){Occupied=()=>false};
+                Auth(changed.Active,Engine.Emails[0]);Auth(changed.Profile("work"),Engine.Emails[1]);
+                File.WriteAllText(Path.Combine(changed.Active,".codex-global-state.json"),"old desktop state");
+                File.WriteAllText(Path.Combine(changed.Profile("work"),"state.json"),"old target state");
+                File.WriteAllText(Path.Combine(changed.Profile("work"),"obsolete.txt"),"obsolete checkpoint");
+                int at=checkpoint;
+                changed.Stage=message=>{if(message.StartsWith(at+" /"))changed.CancelRequested=true;};
+                try{changed.Switch("work");}catch(IOException){}
+                Check(File.Exists(changed.Journal),"changed source has one resumable transaction");
+                // Before the first source deletion, the live original remains authoritative.
+                if(checkpoint<=3)File.WriteAllText(Path.Combine(changed.Active,".codex-global-state.json"),"latest desktop state");
+                File.WriteAllText(Path.Combine(changed.Profile("work"),"state.json"),"latest target state");
+                File.Delete(Path.Combine(changed.Profile("work"),"obsolete.txt"));
+                File.WriteAllText(Path.Combine(changed.Profile("work"),"added.txt"),"new target file");
+                changed.Stage=delegate{};changed.CancelRequested=false;changed.Switch(null);
+                Check(File.ReadAllText(Path.Combine(changed.Active,"state.json"))=="latest target state"
+                    &&File.Exists(Path.Combine(changed.Active,"added.txt"))&&!File.Exists(Path.Combine(changed.Active,"obsolete.txt")),
+                    "retry refreshes changed, added and removed target files at checkpoint "+checkpoint);
+                if(checkpoint<=3)Check(File.ReadAllText(Path.Combine(changed.Profile("life"),".codex-global-state.json"))=="latest desktop state","retry refreshes desktop snapshot at checkpoint "+checkpoint);
+                Check(!File.Exists(changed.Journal)&&!Directory.Exists(changed.Profile("work")),"retry completes same transaction "+checkpoint);
+            }
+            var progressRoot=Path.Combine(temp,"progress");var progressActive=Path.Combine(temp,"progress-user",".codex");
+            var progress=new Engine(progressRoot,progressActive){Occupied=()=>false};Auth(progress.Active,Engine.Emails[0]);Auth(progress.Profile("work"),Engine.Emails[1]);
+            for(int i=0;i<100;i++)File.WriteAllText(Path.Combine(progress.Active,"sample-"+i.ToString("D3")+".txt"),"unchanged sample "+i);
+            progress.Progress=(percent,message)=>{if(percent>=4)progress.CancelRequested=true;};
+            try{progress.Switch("work");}catch(IOException){}
+            Check(progress.PendingProgress==4,"interruption persists four percent");
+            var progressRecord=json.Deserialize<SwitchRecord>(File.ReadAllText(progress.Journal));
+            string checkpointFile=Directory.GetFiles(Path.Combine(progress.Profiles,".outgoing-"+progressRecord.Id)).First();
+            var checkpointTime=File.GetLastWriteTimeUtc(checkpointFile);
+            var resumed=new Engine(progressRoot,progressActive){Occupied=()=>false};
+            Check(resumed.PendingProgress==4,"restart restores persisted progress");int previousPercent=4;bool reusedMessage=false;
+            resumed.Progress=(percent,message)=>{Check(percent>=previousPercent,"retry progress never moves backwards");previousPercent=percent;if(message.Contains("校验已复制文件"))reusedMessage=true;
+                if(percent==4&&File.Exists(checkpointFile))Check(File.GetLastWriteTimeUtc(checkpointFile)==checkpointTime,"verified checkpoint not rewritten");};
+            resumed.Switch(null);Check(previousPercent==100&&reusedMessage&&!File.Exists(resumed.Journal)&&resumed.PendingProgress==0,"resume reuses checkpoint and completes then resets");
+            previousPercent=-1;resumed.Progress=(percent,message)=>{if(previousPercent<0)Check(percent==0,"new switch starts fresh");previousPercent=percent;};resumed.Switch("life");
+            File.WriteAllText(resumed.Journal,"{\"Version\":2,\"Phase\":5}");Check(resumed.PendingProgress==73,"legacy journal falls back to saved phase");File.Delete(resumed.Journal);
             var mismatch=new Engine(Path.Combine(temp,"verify-fault"),Path.Combine(temp,"verify-user",".codex")){Occupied=()=>false};Auth(mismatch.Active,Engine.Emails[0]);Auth(mismatch.Profile("work"),Engine.Emails[1]);
             mismatch.BeforeDelete=source=>File.WriteAllText(Path.Combine(mismatch.Profile("life"),"example.txt"),"simulated corruption");
             bool protectedSource=false;try{mismatch.Switch("work");}catch(IOException){protectedSource=true;}
@@ -79,7 +130,7 @@ public static class SelfTest {
             var duplicate=new Engine(Path.Combine(temp,"duplicate"),Path.Combine(temp,"duplicate-user",".codex"));Auth(duplicate.Active,"same@example.invalid");Auth(duplicate.Profile("life"),"same@example.invalid");Auth(duplicate.Profile("work"),"same@example.invalid");
             Check(duplicate.CliKey()=="","duplicate identities cannot launch CLI");bool duplicateBlocked=false;try{duplicate.Switch("work");}catch(IOException){duplicateBlocked=true;}Check(duplicateBlocked&&!File.Exists(duplicate.Journal),"duplicate identities rejected before mutation");
             File.WriteAllText(engine.Journal,"[]");failed=false;try{engine.Switch("work");}catch(IOException){failed=true;}Check(failed,"incomplete journal blocks switch");
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),"PASS: round-trip switch; occupied process; directory boundary; PowerShell/CMD environment and arguments; recoverable ordered migration; verified source cleanup; partial-deletion recovery; distinct accounts; arbitrary project directory; interrupted transaction protection.\r\nAll tests used temporary fake credentials; real profiles unchanged.");
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),"PASS: v7.2.7 persistent monotonic resume progress; restart restores percentage; unchanged checkpoint reused; completion reset; legacy phase fallback; stale checkpoint refresh at five interruption points; changed/added/removed files; lock/permission/checksum classification; verified child termination; PID identity guard; read-only checkpoint resume and verified cleanup; round-trip switch; occupied process; directory boundary; PowerShell/CMD environment and arguments; recoverable ordered migration; verified source cleanup; partial-deletion recovery; distinct accounts; arbitrary project directory; interrupted transaction protection.\r\nAll tests used temporary fake credentials; real profiles unchanged.");
         } finally { if(Path.GetFullPath(temp).StartsWith(Path.GetFullPath(Path.GetTempPath()),StringComparison.OrdinalIgnoreCase))Directory.Delete(temp,true); }
     }
 }

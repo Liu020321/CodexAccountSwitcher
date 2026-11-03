@@ -1,12 +1,19 @@
-# Codex Account Switcher
+﻿# Codex Account Switcher
 
 Windows 11 风格的 Codex 本地账户切换与 CLI 启动工具，绿色免安装。
 
+## 功能演示与图文介绍
+
+![软件账户切换首页](docs/images/overview.jpg)
+
+查看 [详细产品功能与亮点演示](docs/PRODUCT_GUIDE.md)：账户目录管理、CLI 启动、额度面板、托盘菜单、主题、切换过程及前台/收纳资源占用，含视频录制时的截图与新版恢复进度截图。截图使用示例账户。
+
 ## 使用
 
-在 Releases 下载便携版 ZIP，解压后运行 CodexSettings.exe。需要 Windows 11 x64 / .NET Framework 4.8。Codex CLI 请自行安装。
+在 [Releases](https://github.com/Liu020321/CodexAccountSwitcher/releases/tag/v7.2.7) 下载便携版 ZIP，解压后运行 CodexSettings.exe；也可选择 Setup.exe 安装到当前用户目录。需要 Windows 11 x64 / .NET Framework 4.8。Codex CLI 请自行安装。
 
 - 以完整配置目录迁移切换桌面账户，提供中转、校验、恢复记录与撤销。
+- 中断后保留上次百分比，重启也可恢复；校验并复用已复制文件，发生变化的副本重新复制。
 - CLI 使用与桌面不同的账户，为新终端设置临时 CODEX_HOME。
 - 托盘单击查看额度，双击打开设置，右键退出。
 - 额度仅在打开面板时查询，三分钟缓存；图标按最近结果更新，无后台额度轮询。
@@ -36,3 +43,5 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 发行包不包含作者账户、登录凭证、聊天记录或个人日志。运行后会读取使用者本机认证配置，生成的配置和日志可能包含本机路径，请勿公开。
 
 程序默认普通权限运行；结束进程或提权由用户主动触发。没有设计遥测上传、远程控制及网络监听功能；额度查询通过独立安装的官方 Codex CLI 完成。软件未经独立完整安全审计，也未进行代码签名，不能保证零漏洞或绝对安全。
+
+打包发行：运行 `package.ps1 -OutputDirectory <新的输出目录> -IsccPath <Inno Setup 的 ISCC.exe 路径>`。脚本按白名单打包，不包含使用后的账户与设置。验证范围与实测口径见 [v7.2.7 验证记录](docs/VALIDATION-v7.2.7.md)。

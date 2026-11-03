@@ -67,16 +67,41 @@ public partial class UI {
         menu.Opened+=(s,e)=>{outside=DateTime.UtcNow;timer.Start();Window.Deactivated+=deactivate;};
         menu.Closed+=(s,e)=>{timer.Stop();Window.Deactivated-=deactivate;};menu.StaysOpen=false;
     }
-    bool SwitchNotice(string message,string report){
+    bool SwitchNotice(Exception failure,string report){
+        string message=failure.Message;bool locked=TransferFailure.IsLock(failure),permission=TransferFailure.IsPermission(failure);
         bool retry=false;var dialog=StyledDialog("切换暂未完成",650,500);var frame=DialogFrame(dialog,"账户迁移");var body=new DockPanel{Margin=new Thickness(26,12,26,26)};frame.Children.Add(body);
         var footer=new StackPanel{Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right,Margin=new Thickness(0,18,0,0)};DockPanel.SetDock(footer,Dock.Bottom);body.Children.Add(footer);
         var close=new Button{Content="稍后处理",Margin=new Thickness(0,0,8,0)};var check=new Button{Content="重新检查并继续",Style=(Style)Window.Resources["Primary"]};footer.Children.Add(close);footer.Children.Add(check);close.Click+=(s,e)=>dialog.Close();check.Click+=(s,e)=>{retry=true;dialog.Close();};
-        var stack=new StackPanel();body.Children.Add(new ScrollViewer{Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});stack.Children.Add(new TextBlock{Text=report.Contains("Codex 桌面版")?"请先退出 Codex 桌面版":message.Contains("共享")?"配置文件正被占用":"本次切换已暂停",FontSize=23,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,0,0,12)});stack.Children.Add(new TextBlock{Text=message,Style=(Style)Window.Resources["Muted"],Margin=new Thickness(0,0,0,18)});
-        foreach(string row in report.Split('\n')){
+        var stack=new StackPanel();body.Children.Add(new ScrollViewer{Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});stack.Children.Add(new TextBlock{Text=report.Contains("Codex 桌面版")?"请先退出 Codex 桌面版":locked?"文件被其他程序锁定":permission?"无法访问配置文件":"本次切换已暂停",FontSize=23,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,0,0,12)});stack.Children.Add(new TextBlock{Text=message,Style=(Style)Window.Resources["Muted"],Margin=new Thickness(0,0,0,18)});
+        bool official=(locked||permission)&&FileLocksmith.FindUI()!=null;
+        if(official){
+            var locksmith=new Button{Content="使用 PowerToys 检查占用",HorizontalAlignment=HorizontalAlignment.Left,Margin=new Thickness(0,0,0,12)};stack.Children.Add(locksmith);
+            var feedback=new TextBlock{Text="在官方 File Locksmith 窗口查看占用、结束任务，或以管理员身份重新扫描。处理后回到这里点击“重新检查并继续”。访问被拒绝也可能由只读属性或权限引起。",TextWrapping=TextWrapping.Wrap,Foreground=ThemeBrush("Text"),FontSize=12};stack.Children.Add(feedback);
+            locksmith.Click+=(sender,args)=>{try{using(var opened=FileLocksmith.Open(FileLocksmith.Targets(message,engine.LockRoots()))){}feedback.Text="已打开 PowerToys File Locksmith。结束相关进程后，请回到这里重新检查。";}catch(Exception error){feedback.Text="打开失败："+error.Message;}};
+        }
+        if(!locked&&!permission)stack.Children.Add(new TextBlock{
+            Text="本次是校验或目录状态问题，并未据此认定有进程占用。重试会更新尚未清理源文件的中转副本；若已开始清理，则继续严格校验并保留恢复副本。",
+            TextWrapping=TextWrapping.Wrap,Foreground=ThemeBrush("Text"),FontSize=12});
+        foreach(string row in (official?new string[0]:report.Split('\n'))){
             var line=new DockPanel{Margin=new Thickness(0,4,0,4)};var match=System.Text.RegularExpressions.Regex.Match(row,@"PID (\d+)");
-            if(match.Success){int pid=Int32.Parse(match.Groups[1].Value);DateTime started=DateTime.MinValue;try{using(var proc=System.Diagnostics.Process.GetProcessById(pid))started=proc.StartTime;}catch{}
+            if(match.Success){int pid=Int32.Parse(match.Groups[1].Value);long identity=0;string identityError="";
+                try{using(var proc=System.Diagnostics.Process.GetProcessById(pid))identity=proc.StartTime.ToUniversalTime().Ticks;}catch(Exception error){identityError=error.Message;}
                 var end=new Button{Content="结束任务",Padding=new Thickness(10,5,10,5),Margin=new Thickness(8,0,0,0),ToolTip="结束此进程，未保存的工作可能丢失"};DockPanel.SetDock(end,Dock.Right);line.Children.Add(end);
-                bool elevate=false;end.Click+=(sender,args)=>{try{using(var proc=System.Diagnostics.Process.GetProcessById(pid)){if(started==DateTime.MinValue||proc.StartTime!=started)throw new IOException("进程已变化，请重新检查");if(elevate){System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"taskkill.exe"),"/PID "+pid+" /F"){UseShellExecute=true,Verb="runas",WindowStyle=System.Diagnostics.ProcessWindowStyle.Hidden});}else {proc.Kill();if(!proc.WaitForExit(2000))throw new IOException("进程尚未退出，请稍后重新检查");}}end.IsEnabled=false;end.Content="已请求结束";}catch(System.ComponentModel.Win32Exception){elevate=true;end.Content="以管理员权限结束";}catch(Exception error){end.Content="未结束";line.ToolTip=error.Message;}};
+                var status=new TextBlock{TextWrapping=TextWrapping.Wrap,FontSize=12,Margin=new Thickness(0,8,0,0),Foreground=ThemeBrush("Text")};
+                DockPanel.SetDock(status,Dock.Bottom);line.Children.Add(status);
+                bool elevate=false;
+                if(identity==0){end.IsEnabled=false;end.Content="请重新检查";status.Text="无法确认此进程："+identityError;}
+                end.Click+=async(sender,args)=>{
+                    end.IsEnabled=false;end.Content="正在结束…";status.Text="正在等待进程退出…";
+                    try{
+                        bool useAdmin=elevate;await System.Threading.Tasks.Task.Run(()=>{if(useAdmin)ProcessControl.StopElevated(pid,identity);else ProcessControl.Stop(pid,identity);});
+                        end.Content="已结束";status.Text="原进程已退出。请点击“重新检查并继续”重新验证迁移条件。";
+                    }catch(System.ComponentModel.Win32Exception error){
+                        end.IsEnabled=true;
+                        if(error.NativeErrorCode==5){elevate=true;end.Content="以管理员权限结束";status.Text="权限不足。点击右侧按钮，确认 Windows 授权后再结束此进程。";}
+                        else{end.Content=elevate?"以管理员权限重试":"重试结束";status.Text=(error.NativeErrorCode==1223?"已取消管理员授权，进程未结束。": "结束失败："+error.Message+"（"+error.NativeErrorCode+"）");}
+                    }catch(Exception error){end.IsEnabled=true;end.Content="重试结束";status.Text="结束失败："+error.Message;}
+                };
             }
             line.Children.Add(new TextBlock{Text=row,TextWrapping=TextWrapping.Wrap,FontSize=12,VerticalAlignment=VerticalAlignment.Center});stack.Children.Add(new Border{Style=(Style)Window.Resources["Card"],Child=line});
         }dialog.ShowDialog();return retry;
