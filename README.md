@@ -1,4 +1,4 @@
-﻿# Codex Account Switcher
+# Codex Account Switcher
 
 Windows 11 风格的 Codex 本地账户切换与 CLI 启动工具，绿色免安装。
 
@@ -7,6 +7,10 @@ Windows 11 风格的 Codex 本地账户切换与 CLI 启动工具，绿色免安
 ![软件账户切换首页](docs/images/overview.jpg)
 
 查看 [详细产品功能与亮点演示](docs/PRODUCT_GUIDE.md)：账户目录管理、CLI 启动、额度面板、托盘菜单、主题、切换过程及前台/收纳资源占用，含视频录制时的截图与新版恢复进度截图。截图使用示例账户。
+
+## 安装 PowerToys（文件占用处理所需）
+
+使用文件占用检查与结束进程功能前，需要先安装 [Microsoft PowerToys](https://github.com/microsoft/PowerToys)，并在 PowerToys 设置中启用 File Locksmith（文件锁定程序）。[前往 GitHub 下载 PowerToys 安装包](https://github.com/microsoft/PowerToys/releases/latest)。本软件的便携包和安装包均不附带 PowerToys，需要单独安装。
 
 ## 使用
 

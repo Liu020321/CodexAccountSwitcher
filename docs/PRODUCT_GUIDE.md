@@ -1,8 +1,12 @@
-﻿# Codex Account Switcher · 产品功能与图文指南
+# Codex Account Switcher · 产品功能与图文指南
 
 一个 Windows 11 风格的本地账户管理工具：桌面版使用一个账户，CLI 使用另一个账户。适合将公司项目与个人项目分开管理，也能在退出相关程序后交换桌面账户。
 
 本文截图取自软件演示视频与新版测试界面，使用 company@example.com、personal@example.com、desktop@example.invalid 等示例账户。截图中的额度为演示数据；不包含真实登录凭证。录制界面与当前版本可能有细节差异。
+
+## 安装 PowerToys（文件占用处理所需）
+
+使用文件占用检查与结束进程功能前，需要先安装 [Microsoft PowerToys](https://github.com/microsoft/PowerToys)，并在 PowerToys 设置中启用 File Locksmith（文件锁定程序）。[前往 GitHub 下载 PowerToys 安装包](https://github.com/microsoft/PowerToys/releases/latest)。本软件的便携包和安装包均不附带 PowerToys，需要单独安装。
 
 ## 1. 两个账户，一眼分清
 
