@@ -1,5 +1,7 @@
 # Codex Account Switcher · 产品功能与图文指南
 
+[简体中文](PRODUCT_GUIDE.md) | [English](PRODUCT_GUIDE.en.md)
+
 一个 Windows 11 风格的本地账户管理工具：桌面版使用一个账户，CLI 使用另一个账户。适合将公司项目与个人项目分开管理，也能在退出相关程序后交换桌面账户。
 
 本文截图取自软件演示视频与新版测试界面，使用 company@example.com、personal@example.com、desktop@example.invalid 等示例账户。截图中的额度为演示数据；不包含真实登录凭证。录制界面与当前版本可能有细节差异。

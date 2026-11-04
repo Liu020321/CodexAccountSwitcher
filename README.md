@@ -1,5 +1,7 @@
 # Codex Account Switcher
 
+[简体中文](README.md) | [English](README.en.md)
+
 Windows 11 风格的 Codex 本地账户切换与 CLI 启动工具，绿色免安装。
 
 ## 功能演示与图文介绍
